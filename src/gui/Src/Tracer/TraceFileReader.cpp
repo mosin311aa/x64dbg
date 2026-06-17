@@ -254,8 +254,12 @@ void TraceFileReader::MemoryAccessInfo(TRACEINDEX index, duint* address, duint* 
         return page->MemoryAccessInfo(index - base, address, oldMemory, newMemory, isValid);
 }
 
+// The following macro is used to simulate memory status change in debugging
+//#define MEMORY_STATE_RANDOMIZATION 1
+
 static size_t getMaxCachedPages()
 {
+#ifndef MEMORY_STATE_RANDOMIZATION
 #ifdef _WIN64
     MEMORYSTATUSEX meminfo;
     memset(&meminfo, 0, sizeof(meminfo));
@@ -274,6 +278,10 @@ static size_t getMaxCachedPages()
         return 100;
 #else //x86
     return 100;
+#endif
+#else
+    // To debug memory status changes
+    return rand() * 200 / RAND_MAX + 10;
 #endif
 }
 
@@ -318,6 +326,13 @@ TraceFilePage* TraceFileReader::getPage(TRACEINDEX index, TRACEINDEX* base)
             {
                 pageOutTime = i.second.lastAccessed;
                 pageOutIndex = i.first;
+            }
+        }
+        if(lastAccessedPage)
+        {
+            if(pageOutIndex.first == lastAccessedIndexOffset)
+            {
+                lastAccessedPage = nullptr; // going to delete this page
             }
         }
         pages.erase(pageOutIndex);
@@ -631,6 +646,41 @@ void TraceFileReader::purgeLastPage()
     }
 }
 
+static void GetMemoryAccessSizes(duint cip, const unsigned char* opcode, int opcodeSize, unsigned char* sizes, size_t count)
+{
+    for(size_t i = 0; i < count; i++)
+        sizes[i] = sizeof(duint);
+    if(count == 0)
+        return;
+
+    Zydis zydis;
+    if(!zydis.Disassemble(cip, opcode, opcodeSize) || !zydis.Success() || zydis.IsNop() || zydis.GetId() == ZYDIS_MNEMONIC_LEA)
+        return;
+
+    size_t out = 0;
+    for(uint8_t opindex = 0; opindex < zydis.TotalOpCount() && out < count; opindex++)
+    {
+        const auto & operand = zydis[opindex];
+        if(operand.type != ZYDIS_OPERAND_TYPE_MEMORY)
+            continue;
+        size_t bytes = (operand.size + 7) / 8;
+        if(bytes == 0)
+            bytes = sizeof(duint);
+        while(bytes > 0 && out < count)
+        {
+            auto chunk = std::min<size_t>(bytes, sizeof(duint));
+            sizes[out++] = (unsigned char)chunk;
+            bytes -= chunk;
+        }
+    }
+
+    if(out != count)
+    {
+        for(size_t i = 0; i < count; i++)
+            sizes[i] = sizeof(duint);
+    }
+}
+
 // Extract memory access information of given index into dump object
 void TraceFileReader::buildDump(TRACEINDEX index)
 {
@@ -647,11 +697,13 @@ void TraceFileReader::buildDump(TRACEINDEX index)
         duint newMemory[32];
         duint address[32];
         bool isValid[32];
+        unsigned char memorySize[32];
+        GetMemoryAccessSizes(cip, opcode, opcodeSize, memorySize, MemoryOperandsCount);
         if(MemoryOperandsCount > 0) //LEA and NOP instructions are ignored here
         {
             MemoryAccessInfo(index, address, oldMemory, newMemory, isValid);
         }
-        dump.addMemAccess(cip, opcode, opcodeSize, address, oldMemory, newMemory, MemoryOperandsCount);
+        dump.addMemAccess(cip, opcode, opcodeSize, address, oldMemory, newMemory, memorySize, MemoryOperandsCount);
         //for(int i = 0; i < MemoryOperandsCount; i++)
         //{
         //    dump.addMemAccess(address[i], &oldMemory[i], &newMemory[i], sizeof(duint));

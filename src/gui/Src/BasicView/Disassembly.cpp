@@ -944,6 +944,17 @@ void Disassembly::keyPressEvent(QKeyEvent* event)
         // TODO: only update if the selection actually changed
         updateViewport();
     }
+    else if((event->modifiers() == Qt::NoModifier || event->modifiers() == Qt::KeypadModifier) && (key == Qt::Key_PageUp || key == Qt::Key_PageDown))
+    {
+        AbstractTableView::keyPressEvent(event);
+
+        auto selectedRva = getTableOffset();
+        if(key == Qt::Key_PageDown && getNbrOfLineToPrint() > 1)
+            selectedRva = getInstructionRVA(selectedRva, getNbrOfLineToPrint() - 1);
+
+        setSingleSelection(selectedRva);
+        updateViewport();
+    }
     else if(key == Qt::Key_Return || key == Qt::Key_Enter)
     {
         followInstruction(getInitialSelection());
@@ -2064,9 +2075,6 @@ void Disassembly::disassembleAt(duint va, bool history, duint newTableOffset)
     mMemPage->setAttributes(base, size);
     mDisasm->getEncodeMap()->setMemoryRegion(base);
 
-    if(mRvaDisplayEnabled && mMemPage->getBase() != mRvaDisplayPageBase)
-        mRvaDisplayEnabled = false;
-
     setRowCount(size);
 
     // Selects disassembled instruction
@@ -2266,7 +2274,7 @@ bool Disassembly::historyHasNext() const
 QString Disassembly::getAddrText(duint cur_addr, QString & label, bool getLabel) const
 {
     QString addrText = "";
-    if(mRvaDisplayEnabled) //RVA display
+    if(mRvaDisplayMode == RvaDisplayRelative)
     {
         dsint rva = cur_addr - mRvaDisplayBase;
         if(rva == 0)
@@ -2290,8 +2298,21 @@ QString Disassembly::getAddrText(duint cur_addr, QString & label, bool getLabel)
             else
                 addrText = "$-" + QString("%1").arg(-rva, -7, 16, QChar(' ')).toUpper();
         }
+        addrText += ToPtrString(cur_addr);
     }
-    addrText += ToPtrString(cur_addr);
+    else if(mRvaDisplayMode == RvaDisplayModule)
+    {
+        char module[MAX_MODULE_SIZE] = "";
+        duint modBase = DbgFunctions()->ModBaseFromAddr(cur_addr);
+        if(modBase && DbgGetModuleAt(cur_addr, module))
+            addrText = QString(module) + ":$" + QString("%1").arg(cur_addr - modBase, 0, 16).toUpper();
+        else
+            addrText = "?:$" + QString("%1").arg(cur_addr - mMemPage->getBase(), 0, 16).toUpper();
+    }
+    else
+    {
+        addrText = ToPtrString(cur_addr);
+    }
     char label_[MAX_LABEL_SIZE] = "";
     if(getLabel && DbgGetLabelAt(cur_addr, SEG_DEFAULT, label_)) //has label
     {
